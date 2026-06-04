@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.2.1 — Code-review fixes
+
+Bug fixes and hardening surfaced by an audit pass over v0.2.0. 108
+pytest cases passing (was 98).
+
+### Bug fixes
+
+- **Migration**: `_rebuild_memory_items_drop_status_check` was losing
+  `namespace` data on rebuild (used a `LIMIT 0` subquery that always
+  returned NULL, so COALESCE fell through to literal `'work'`). Rebuild
+  now copies the column directly. New tests exercise the rebuild on a
+  hand-crafted legacy DB and confirm personal items survive.
+- **Migration ordering**: `schema.sql` was being executed before the
+  pre-existing DB had its `namespace` column added, so `CREATE INDEX
+  idx_memory_items_namespace` failed on legacy DBs. Split migrations
+  into `_pre_schema_migrate` (adds missing columns) and
+  `_post_schema_migrate` (CHECK-constraint rebuild) around the schema
+  script.
+- **Cross-namespace links** (privacy leak): `link_memories`,
+  `mark_contradiction`, `supersede`, and `merge_into` now reject any
+  operation across `work`/`personal` boundaries. `_links_for` also
+  filters by parent namespace as a defence in depth — even if a legacy
+  DB or hand-edit injected a cross-namespace link, `get_memory` will
+  no longer surface it.
+- **UI namespace toggle**: was only reloading Inbox + Proposed. Now
+  reloads whatever tab is currently active (Decisions, Tasks, Projects,
+  Events).
+
+### New features
+
+- **`MINDCONTINUUM_DISABLE_EMBEDDINGS=1`** env var and matching
+  `--no-embeddings` CLI flag to skip the bge-small download and avoid
+  the 5–30 s first-call latency on fresh installs. Re-read on every
+  `embeddings_available()` call so operators can toggle without
+  restart. `/api/embeddings/status` now reports `disabled_by_env`.
+
+### Polish
+
+- `update_memory` embedding-reindex condition simplified to one
+  `text_changed = (title is not None) or …` boolean.
+- `suggest_duplicates` sorts FTS title tokens before building the MATCH
+  expression so behaviour is deterministic across runs.
+
 ## v0.2.0 — Full spec build (Gate 3 waived)
 
 Adds every remaining feature from the original product spec on top of the

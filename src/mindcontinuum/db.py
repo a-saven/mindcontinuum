@@ -23,29 +23,54 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path | str) -> None:
+    """Bootstrap the schema and run any pending migrations.
+
+    Order matters:
+
+    1. ``_pre_schema_migrate`` adds columns that older DBs are missing
+       (``namespace``, ``memory_links.note``). This has to run BEFORE the
+       canonical schema script because the script creates indices that
+       reference those columns.
+    2. The schema script runs idempotently — ``CREATE TABLE IF NOT EXISTS``
+       is a no-op when the table already exists, and FTS triggers /
+       indices are re-attached.
+    3. ``_post_schema_migrate`` runs the heavier rebuild (drops the legacy
+       ``CHECK(status IN …)`` constraint) so newer statuses like
+       ``proposed_stable`` can be inserted.
+    """
     conn = connect(db_path)
     try:
+        _pre_schema_migrate(conn)
         conn.executescript(_load_schema())
-        _migrate(conn)
+        _post_schema_migrate(conn)
     finally:
         conn.close()
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
-    """Idempotent in-place migrations for DBs created by older versions.
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
 
-    Each block self-detects whether it needs to run.
-    """
-    # 1) namespace column on memory_items + events_log
+
+def _pre_schema_migrate(conn: sqlite3.Connection) -> None:
+    """Add missing columns on legacy DBs so the schema script can run."""
     for table in ("memory_items", "events_log"):
+        if not _has_table(conn, table):
+            continue
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if "namespace" not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN namespace TEXT NOT NULL DEFAULT 'work'")
-    # 2) note column on memory_links
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(memory_links)").fetchall()}
-    if "note" not in cols:
-        conn.execute("ALTER TABLE memory_links ADD COLUMN note TEXT")
-    # 3) old status CHECK on memory_items prevented 'proposed_stable' — rebuild
+            conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN namespace TEXT NOT NULL DEFAULT 'work'"
+            )
+    if _has_table(conn, "memory_links"):
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(memory_links)").fetchall()}
+        if "note" not in cols:
+            conn.execute("ALTER TABLE memory_links ADD COLUMN note TEXT")
+
+
+def _post_schema_migrate(conn: sqlite3.Connection) -> None:
+    """Drop the legacy status CHECK constraint by rebuilding memory_items."""
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='memory_items'"
     ).fetchone()
@@ -56,8 +81,11 @@ def _migrate(conn: sqlite3.Connection) -> None:
 def _rebuild_memory_items_drop_status_check(conn: sqlite3.Connection) -> None:
     """Drop the legacy CHECK(status IN ...) constraint by table-rebuild.
 
-    Preserves all data and indices, then re-runs the schema script to
-    re-create FTS triggers etc. against the new table.
+    Preserves all rows including ``namespace`` (which was already added by the
+    prior ALTER step in :func:`_migrate`, so the old table is guaranteed to
+    have that column at the point this runs). After the rebuild the schema
+    script's CREATE-IF-NOT-EXISTS pass re-attaches the FTS triggers and
+    indices to the new table.
     """
     conn.executescript("""
         PRAGMA foreign_keys=OFF;
@@ -84,10 +112,8 @@ def _rebuild_memory_items_drop_status_check(conn: sqlite3.Connection) -> None:
         INSERT INTO memory_items (id,title,type,summary,body,project_id,source,tags_json,
                                   importance,status,namespace,created_at,updated_at)
         SELECT id,title,type,summary,body,project_id,source,tags_json,
-               importance,status,
-               COALESCE((SELECT 'work' FROM pragma_table_info('_memory_items_old')
-                         WHERE name='namespace' LIMIT 0), 'work'),
-               created_at,updated_at FROM _memory_items_old;
+               importance,status,namespace,created_at,updated_at
+        FROM _memory_items_old;
         DROP TABLE _memory_items_old;
         COMMIT;
         PRAGMA foreign_keys=ON;

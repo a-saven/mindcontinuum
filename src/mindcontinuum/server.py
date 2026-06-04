@@ -67,6 +67,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=None, help="Port to bind (default 3780)")
     parser.add_argument("--data-dir", default=None, help="Directory to store the SQLite database")
     parser.add_argument("--reload", action="store_true", help="Reload on file changes (dev)")
+    parser.add_argument(
+        "--no-embeddings", action="store_true",
+        help="Disable local embeddings (semantic + hybrid search). Equivalent to "
+             "setting MINDCONTINUUM_DISABLE_EMBEDDINGS=1. Useful on low-memory "
+             "machines or to skip the bge-small download on first run.",
+    )
     args = parser.parse_args(argv)
 
     if args.data_dir:
@@ -75,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
         os.environ["MINDCONTINUUM_HOST"] = args.host
     if args.port:
         os.environ["MINDCONTINUUM_PORT"] = str(args.port)
+    if args.no_embeddings:
+        os.environ["MINDCONTINUUM_DISABLE_EMBEDDINGS"] = "1"
 
     settings = Settings.from_env()
 

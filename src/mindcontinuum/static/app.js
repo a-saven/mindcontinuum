@@ -466,15 +466,31 @@ function applyNamespace(v) {
   $("#export-md").href = `/api/export/markdown?namespace=${v}`;
 }
 
+const TAB_LOADERS = {
+  inbox: loadInbox,
+  proposed: loadProposed,
+  decisions: loadDecisions,
+  tasks: loadTasks,
+  projects: loadProjects,
+  events: loadEvents,
+  search: () => {},        // re-running an empty search would clear results
+  settings: () => {},
+};
+
+function activeTab() {
+  const t = $$(".tab").find((t) => t.classList.contains("active"));
+  return t ? t.dataset.tab : "inbox";
+}
+
 function setTab(name) {
   $$(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
   $$(".view").forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
-  if (name === "inbox") loadInbox();
-  else if (name === "proposed") loadProposed();
-  else if (name === "decisions") loadDecisions();
-  else if (name === "tasks") loadTasks();
-  else if (name === "projects") loadProjects();
-  else if (name === "events") loadEvents();
+  (TAB_LOADERS[name] || (() => {}))();
+}
+
+function reloadActiveTab() {
+  const name = activeTab();
+  (TAB_LOADERS[name] || (() => {}))();
 }
 
 async function reindexEmbeddings() {
@@ -534,8 +550,7 @@ function wire() {
   $("#d-reject").addEventListener("click", rejectDetail);
   $("#ns-select").addEventListener("change", (e) => {
     applyNamespace(e.target.value);
-    loadInbox();
-    if ($("#view-proposed").classList.contains("active")) loadProposed();
+    reloadActiveTab();
   });
   $("#embed-reindex").addEventListener("click", reindexEmbeddings);
   $("#import-json-btn").addEventListener("click", () => $("#import-json-file").click());

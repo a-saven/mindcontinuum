@@ -306,26 +306,47 @@ class MemoryStore:
         if item is None:
             return None
         if enrich:
-            item["links"] = self._links_for(int(memory_id))
+            item["links"] = self._links_for(int(memory_id), parent_namespace=item["namespace"])
             item["contradictions"] = [
                 lk for lk in item["links"] if lk["link_type"] == "contradicts"
             ]
         return item
 
-    def _links_for(self, memory_id: int) -> list[dict[str, Any]]:
-        cur = self._conn.execute(
-            """SELECT l.id AS link_id, l.from_id, l.to_id, l.link_type, l.note, l.created_at,
-                      m.id AS other_id, m.title AS other_title, m.status AS other_status,
-                      m.namespace AS other_namespace,
-                      CASE WHEN l.from_id = ? THEN 'out' ELSE 'in' END AS direction
-               FROM memory_links l
-               JOIN memory_items m
-                 ON m.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END
-               WHERE l.from_id = ? OR l.to_id = ?
-               ORDER BY l.created_at DESC""",
-            (memory_id, memory_id, memory_id, memory_id),
+    def _links_for(
+        self, memory_id: int, *, parent_namespace: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return links touching ``memory_id``.
+
+        When ``parent_namespace`` is given, the result is filtered so that
+        only links to items in the same namespace are returned. This is a
+        defensive measure on top of the same-namespace check at creation —
+        if a legacy DB ever contained cross-namespace links (e.g. from an
+        older release or a hand-edited DB), they will not leak through here.
+        """
+        sql = (
+            "SELECT l.id AS link_id, l.from_id, l.to_id, l.link_type, l.note, l.created_at, "
+            "       m.id AS other_id, m.title AS other_title, m.status AS other_status, "
+            "       m.namespace AS other_namespace, "
+            "       CASE WHEN l.from_id = ? THEN 'out' ELSE 'in' END AS direction "
+            "FROM memory_links l "
+            "JOIN memory_items m "
+            "  ON m.id = CASE WHEN l.from_id = ? THEN l.to_id ELSE l.from_id END "
+            "WHERE (l.from_id = ? OR l.to_id = ?) "
         )
-        return [dict(r) for r in cur.fetchall()]
+        params: list[Any] = [memory_id, memory_id, memory_id, memory_id]
+        if parent_namespace is not None:
+            sql += "AND m.namespace = ? "
+            params.append(parent_namespace)
+        sql += "ORDER BY l.created_at DESC"
+        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
+
+    @staticmethod
+    def _require_same_namespace(a: dict[str, Any], b: dict[str, Any], op: str) -> None:
+        if a["namespace"] != b["namespace"]:
+            raise ValueError(
+                f"{op} across namespaces is not allowed "
+                f"(got {a['namespace']!r} and {b['namespace']!r})"
+            )
 
     def list_recent(
         self,
@@ -597,12 +618,8 @@ class MemoryStore:
                 namespace=existing["namespace"],
                 payload={"changed": [f.split(" = ")[0] for f in fields if f != "updated_at = ?"]},
             )
-        if self.enable_embeddings and any(k in ("title", "summary", "body")
-                                          for k in (
-                                              "title" if title is not None else "",
-                                              "summary" if summary is not None else "",
-                                              "body" if body is not None else "",
-                                          )):
+        text_changed = (title is not None) or (summary is not None) or (body is not None)
+        if self.enable_embeddings and text_changed:
             fresh = self.get_memory(memory_id, enrich=False) or {}
             _emb.index_memory(
                 self._conn, int(memory_id),
@@ -704,6 +721,7 @@ class MemoryStore:
         existing_item = self.get_memory(existing_memory_id, enrich=False)
         if not new_item or not existing_item:
             raise LookupError("both memories must exist")
+        self._require_same_namespace(new_item, existing_item, "mark_contradiction")
         with transaction(self._conn) as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO memory_links (from_id, to_id, link_type, note) "
@@ -736,6 +754,7 @@ class MemoryStore:
         b = self.get_memory(to_id, enrich=False)
         if not a or not b:
             raise LookupError("both memories must exist")
+        self._require_same_namespace(a, b, "link_memories")
         with transaction(self._conn) as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO memory_links (from_id, to_id, link_type, note) "
@@ -762,6 +781,7 @@ class MemoryStore:
         new = self.get_memory(new_id, enrich=False)
         if not old or not new:
             raise LookupError("both memories must exist")
+        self._require_same_namespace(old, new, "supersede")
         with transaction(self._conn) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO memory_links (from_id, to_id, link_type) "
@@ -790,9 +810,10 @@ class MemoryStore:
         project_id = item.get("project_id")
 
         # Pull candidate ids from FTS by title tokens (cheap pre-filter).
+        # Sort tokens for deterministic MATCH expressions across runs.
         candidates: list[dict[str, Any]] = []
         if title_tokens:
-            match = " OR ".join(f'"{t}"' for t in list(title_tokens)[:10])
+            match = " OR ".join(f'"{t}"' for t in sorted(title_tokens)[:10])
             try:
                 rows = self._conn.execute(
                     "SELECT m.id, m.title, m.tags_json, m.project_id, m.status, m.namespace "
@@ -859,6 +880,7 @@ class MemoryStore:
         tgt = self.get_memory(target_id, enrich=False)
         if not src or not tgt:
             raise LookupError("both memories must exist")
+        self._require_same_namespace(src, tgt, "merge_into")
         with transaction(self._conn) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO memory_links (from_id, to_id, link_type) "

@@ -99,7 +99,7 @@ def build_router() -> APIRouter:
         emb_status = _store(request).embeddings_status()
         return {
             "ok": True,
-            "version": "0.2.0",
+            "version": "0.2.1",
             "server_name": settings.server_name,
             "host": settings.host,
             "port": settings.port,

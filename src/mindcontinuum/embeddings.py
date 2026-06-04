@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_DIM = 384
+DISABLE_ENV_VAR = "MINDCONTINUUM_DISABLE_EMBEDDINGS"
+_TRUTHY = {"1", "true", "yes", "on"}
 
 _MODEL = None
 _MODEL_LOCK = Lock()
@@ -42,8 +44,23 @@ def set_cache_dir(path: Path | str) -> None:
     os.environ.setdefault("FASTEMBED_CACHE_PATH", str(path))
 
 
+def _disabled_by_env() -> bool:
+    return os.environ.get(DISABLE_ENV_VAR, "").strip().lower() in _TRUTHY
+
+
 def embeddings_available() -> bool:
-    """Check once whether fastembed can be imported. Cheap after first call."""
+    """Whether fastembed can be used right now.
+
+    Returns False if either:
+      * the user explicitly set MINDCONTINUUM_DISABLE_EMBEDDINGS=1, or
+      * the fastembed package cannot be imported.
+
+    The env flag is re-read on every call so tests/operators can toggle it
+    at runtime without restarting; the import check is cached after the
+    first successful probe.
+    """
+    if _disabled_by_env():
+        return False
     global _AVAILABLE
     if _AVAILABLE is not None:
         return _AVAILABLE
@@ -162,12 +179,14 @@ def semantic_search(
 def status(conn: sqlite3.Connection) -> dict[str, Any]:
     cache = os.environ.get("FASTEMBED_CACHE_PATH")
     available = embeddings_available()
+    disabled_by_env = _disabled_by_env()
     total = conn.execute("SELECT COUNT(*) FROM memory_items").fetchone()[0]
     indexed = conn.execute(
         "SELECT COUNT(*) FROM memory_embeddings WHERE model = ?", (DEFAULT_MODEL,)
     ).fetchone()[0]
     return {
         "available": available,
+        "disabled_by_env": disabled_by_env,
         "model": DEFAULT_MODEL if available else None,
         "dim": DEFAULT_DIM if available else None,
         "count_total": int(total),
