@@ -133,11 +133,14 @@ def build_server(store: MemoryStore, *, name: str = "MindContinuum") -> FastMCP:
         namespace: str = "work",
     ) -> dict[str, Any]:
         ns, warn = _resolve_ns(namespace)
-        results = await _run(
+        results, resolved = await _run(
             store.search_memory, query, project=project, type=type,
-            limit=limit, mode=mode, alpha=alpha, namespace=ns,
+            limit=limit, mode=mode, alpha=alpha, namespace=ns, _return_mode=True,
         )
-        out: dict[str, Any] = {"query": query, "mode": mode, "count": len(results), "results": results}
+        out: dict[str, Any] = {
+            "query": query, "mode": mode, "resolved_mode": resolved,
+            "count": len(results), "results": results,
+        }
         if warn:
             out["_warning"] = warn
         return out

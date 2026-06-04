@@ -1,5 +1,59 @@
 # Changelog
 
+## v0.2.2 — Thread safety + input hardening
+
+Second-pass review. The big one is real: the previous version had a
+threading bug that wasn't tripping in tests because pytest is
+single-threaded. 122 cases passing (was 108).
+
+### Thread safety (real bug)
+
+- **`MemoryStore` now uses one SQLite connection per thread** via
+  `threading.local`. FastAPI dispatches sync routes to a worker pool
+  and MCP tools jump into `asyncio.to_thread`, so a single shared
+  connection was being used concurrently by multiple threads.
+  Symptoms: interleaved `BEGIN`/`COMMIT` calls, sporadic `SQLITE_BUSY`
+  errors, and (in the worst case) FTS index corruption. Now each
+  thread gets its own connection; `close()` tears them all down.
+- **`busy_timeout = 5000` ms** set on every new connection so writers
+  serialise cleanly instead of failing fast.
+- **`transaction()` uses `BEGIN IMMEDIATE`** instead of the default
+  deferred BEGIN. Under WAL, two deferred transactions racing to
+  upgrade to writer can both lose to `SQLITE_BUSY` with no retry; an
+  immediate BEGIN takes the reserved lock up front and queues
+  contenders through the busy timeout. New tests exercise 60 saves
+  across 8 threads + interleaved readers; both pass cleanly.
+
+### Input hardening
+
+- **Pydantic `max_length`** on every string field in `MemoryCreate`,
+  `MemoryUpdate`, `AppendBody`, `DecisionCreate`, `TaskCreate`, etc.
+  Matches the `MAX_TITLE` / `MAX_BODY` / `MAX_SUMMARY` constants in
+  core. Oversize inputs now fail with a 422 at validation time rather
+  than streaming megabytes through to core only to bounce them.
+- **Import endpoint size cap** of 50 MB enforced via the
+  `Content-Length` header AND a post-read check. Anything over the
+  cap → 413 with a descriptive message. Removes the OOM-via-bulk-
+  import vector flagged in the v0.2.1 changelog.
+
+### API ergonomics
+
+- **`/api/search` returns `resolved_mode`** alongside `mode`. When you
+  ask for `mode=auto`, the response now also tells you whether it
+  resolved to `keyword` or `hybrid` based on embeddings availability.
+  Same field exposed through the MCP `search_memory` tool.
+- **`/api/search?mode=bogus` reliably returns 400** with a descriptive
+  message. The old test that accepted 400/422/500 is now tightened
+  to demand 400.
+
+### Markdown import polish
+
+- **Preamble before the first H2 is kept as an item iff it has body
+  content beyond the H1 line.** A bare `# Title` then `## Section`
+  still drops the title-only preamble (a useless empty memory). A
+  `# Title\n\nbody\n\n## Section` keeps the preamble as a separate
+  memory now — previously it was dropped.
+
 ## v0.2.1 — Code-review fixes
 
 Bug fixes and hardening surfaced by an audit pass over v0.2.0. 108

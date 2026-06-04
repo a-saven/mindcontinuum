@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,12 @@ from typing import Any, Iterable
 
 from . import embeddings as _emb
 from .db import connect, init_db, transaction
+
+# How long SQLite waits when another writer holds the database lock before
+# raising OperationalError. 5 s is plenty for the kind of bursts you get
+# from the dashboard + a couple of MCP calls; reduce if a noisy retry loop
+# starts dominating logs.
+_SQLITE_BUSY_TIMEOUT_MS = 5_000
 
 VALID_TYPES = {
     "note", "idea", "research", "project_context", "client_context",
@@ -175,22 +182,59 @@ def _minmax_norm(d: dict[int, float]) -> dict[int, float]:
 
 @dataclass
 class MemoryStore:
-    """Connected, schema-initialized memory store."""
+    """Connected, schema-initialized memory store.
+
+    Thread safety: each calling thread gets its own SQLite connection via
+    :pyattr:`_local`. FastAPI dispatches sync routes to a worker pool and
+    MCP tools hop into ``asyncio.to_thread``, so several threads may call
+    the same ``MemoryStore`` concurrently. SQLite WAL mode allows N
+    readers in parallel and serialises writers via ``busy_timeout``; the
+    per-thread connections prevent the Python-side interleaving of
+    ``BEGIN``/``COMMIT`` that a single shared connection would suffer.
+    """
 
     db_path: Path
     actor_default: str = "system"
     enable_embeddings: bool = True
-    _conn: sqlite3.Connection = field(init=False)
+    _local: threading.local = field(init=False, default_factory=threading.local)
+    _connections: list[sqlite3.Connection] = field(init=False, default_factory=list)
+    _connections_lock: threading.Lock = field(init=False, default_factory=threading.Lock)
 
     def __post_init__(self) -> None:
         init_db(self.db_path)
-        self._conn = connect(self.db_path)
+        # Touch the property so we eagerly open one connection on the
+        # constructing thread; surfaces filesystem permission errors here
+        # rather than at first query.
+        _ = self._conn
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        """Return this thread's SQLite connection, creating it on first use."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = connect(self.db_path)
+            conn.execute(f"PRAGMA busy_timeout = {_SQLITE_BUSY_TIMEOUT_MS}")
+            self._local.conn = conn
+            with self._connections_lock:
+                self._connections.append(conn)
+        return conn
 
     def close(self) -> None:
-        try:
-            self._conn.close()
-        except Exception:
-            pass
+        """Close every per-thread connection. Safe to call multiple times."""
+        with self._connections_lock:
+            for c in self._connections:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            self._connections.clear()
+        # Drop this thread's reference too so a subsequent call would
+        # transparently reopen rather than reuse a closed connection.
+        if hasattr(self._local, "conn"):
+            try:
+                delattr(self._local, "conn")
+            except Exception:
+                pass
 
     # ------- projects -------
 
@@ -382,16 +426,26 @@ class MemoryStore:
         mode: str = "auto",
         alpha: float = 0.5,
         namespace: str = "work",
-    ) -> list[dict[str, Any]]:
+        _return_mode: bool = False,
+    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], str]:
+        """FTS5 + optional semantic + hybrid ranked search.
+
+        When ``_return_mode=True`` returns ``(results, resolved_mode)`` so the
+        REST/MCP layer can surface what actually ran (auto resolves to either
+        keyword or hybrid based on whether embeddings are loaded).
+        """
         q = (query or "").strip()
         if not q:
             return []
         limit = max(1, min(int(limit or 20), 100))
         ns = _require("namespace", namespace, VALID_NAMESPACE)
+        requested_mode = mode
         if mode == "auto":
             mode = "hybrid" if _emb.embeddings_available() else "keyword"
         if mode not in {"keyword", "semantic", "hybrid"}:
-            raise ValueError("mode must be 'keyword', 'semantic', 'hybrid', or 'auto'")
+            raise ValueError(
+                f"mode must be 'keyword', 'semantic', 'hybrid', or 'auto'; got {requested_mode!r}"
+            )
 
         bm25_scores: dict[int, float] = {}
         sem_scores: dict[int, float] = {}
@@ -426,9 +480,10 @@ class MemoryStore:
             ids = [mid for mid, _ in ranked[:limit]]
 
         if not ids and mode in ("keyword", "hybrid"):
-            return self._fallback_like(q, ns, limit, project=project, type=type)
-
-        return self._hydrate(ids, project=project, type=type, namespace=ns)
+            results = self._fallback_like(q, ns, limit, project=project, type=type)
+        else:
+            results = self._hydrate(ids, project=project, type=type, namespace=ns)
+        return (results, mode) if _return_mode else results
 
     def _fts_scores(
         self,
@@ -1235,9 +1290,16 @@ class MemoryStore:
             return {"imported": 0, "skipped": 0, "errors": 0, "error_messages": []}
         blocks = re.split(r"(?m)^##\s+", text)
         if len(blocks) > 1:
-            # Drop any pre-H2 preamble (often a single H1 title) — we only
-            # want the H2 sections as individual items.
-            blocks = blocks[1:]
+            preamble, sections = blocks[0], blocks[1:]
+            # The preamble before the first H2 commonly contains a single
+            # H1 title with nothing else. We only keep it as an item if
+            # there's actual body text beyond that H1 line — otherwise
+            # we'd be importing a useless title-only memory.
+            without_h1 = re.sub(r"(?m)\A#\s+.*$\n?", "", preamble, count=1)
+            if without_h1.strip():
+                blocks = [preamble, *sections]
+            else:
+                blocks = sections
         else:
             blocks = [re.sub(r"(?m)^#\s+", "", blocks[0], count=1)]
         imported = skipped = errors = 0

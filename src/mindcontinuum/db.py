@@ -122,7 +122,17 @@ def _rebuild_memory_items_drop_status_check(conn: sqlite3.Connection) -> None:
 
 @contextmanager
 def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
-    conn.execute("BEGIN")
+    """Run a block in an explicit write transaction.
+
+    Uses ``BEGIN IMMEDIATE`` rather than the default ``BEGIN DEFERRED``.
+    Under WAL, a deferred BEGIN doesn't acquire any lock until the first
+    write; two concurrent deferred transactions can race and one will get
+    ``SQLITE_BUSY`` with no retry, even when ``busy_timeout`` is set.
+    Immediate BEGIN grabs the reserved-writer lock up front, so all
+    contention happens at the BEGIN call site and is correctly handled by
+    the busy timeout.
+    """
+    conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
         conn.execute("COMMIT")

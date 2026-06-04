@@ -138,7 +138,8 @@ def test_search_modes_accepted(client: TestClient):
 
 def test_search_invalid_mode_400(client: TestClient):
     r = client.get("/api/search?q=x&mode=nope")
-    assert r.status_code == 500 or r.status_code == 400 or r.status_code == 422
+    assert r.status_code == 400
+    assert "mode" in r.json()["detail"].lower()
 
 
 def test_status_endpoint_exposes_new_fields(client: TestClient):

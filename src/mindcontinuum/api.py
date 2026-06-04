@@ -10,56 +10,60 @@ from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
 from .core import (
+    MAX_BODY, MAX_SUMMARY, MAX_TITLE,
     MemoryStore, VALID_IMPORTANCE, VALID_NAMESPACE, VALID_PRIORITY,
     VALID_STATUS, VALID_TYPES, USER_LINK_TYPES,
 )
 from .mcp_tools import personal_allowed
 
+# Maximum import payload size (50 MB). Reject before reading into memory.
+MAX_IMPORT_BYTES = 50 * 1024 * 1024
+
 
 class MemoryCreate(BaseModel):
-    title: str = Field(..., min_length=1)
-    body: str = ""
-    summary: str | None = None
+    title: str = Field(..., min_length=1, max_length=MAX_TITLE)
+    body: str = Field("", max_length=MAX_BODY)
+    summary: str | None = Field(None, max_length=MAX_SUMMARY)
     type: str = "note"
-    project: str | None = None
+    project: str | None = Field(None, max_length=200)
     tags: list[str] | None = None
     importance: str = "medium"
-    source: str | None = None
+    source: str | None = Field(None, max_length=2_000)
     status: str = "inbox"
     namespace: str = "work"
 
 
 class MemoryUpdate(BaseModel):
-    title: str | None = None
-    body: str | None = None
-    summary: str | None = None
+    title: str | None = Field(None, min_length=1, max_length=MAX_TITLE)
+    body: str | None = Field(None, max_length=MAX_BODY)
+    summary: str | None = Field(None, max_length=MAX_SUMMARY)
     type: str | None = None
-    project: str | None = None
+    project: str | None = Field(None, max_length=200)
     tags: list[str] | None = None
     importance: str | None = None
     status: str | None = None
 
 
 class AppendBody(BaseModel):
-    text: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1, max_length=MAX_BODY)
 
 
 class ProposeStableBody(BaseModel):
-    reason: str | None = None
+    reason: str | None = Field(None, max_length=2_000)
 
 
 class DecisionCreate(BaseModel):
-    project: str
-    decision: str
-    rationale: str | None = None
-    tradeoffs: str | None = None
+    project: str = Field(..., max_length=200)
+    decision: str = Field(..., min_length=1, max_length=MAX_BODY)
+    rationale: str | None = Field(None, max_length=MAX_BODY)
+    tradeoffs: str | None = Field(None, max_length=MAX_BODY)
     namespace: str = "work"
 
 
 class TaskCreate(BaseModel):
-    project: str
-    title: str
-    next_action: str | None = None
+    project: str = Field(..., max_length=200)
+    title: str = Field(..., min_length=1, max_length=MAX_TITLE)
+    next_action: str | None = Field(None, max_length=MAX_BODY)
     priority: str = "medium"
     namespace: str = "work"
 
@@ -67,12 +71,12 @@ class TaskCreate(BaseModel):
 class LinkBody(BaseModel):
     to_id: int
     link_type: str = "related"
-    note: str | None = None
+    note: str | None = Field(None, max_length=2_000)
 
 
 class ContradictionBody(BaseModel):
     existing_id: int
-    note: str | None = None
+    note: str | None = Field(None, max_length=2_000)
 
 
 def _store(request: Request) -> MemoryStore:
@@ -99,7 +103,7 @@ def build_router() -> APIRouter:
         emb_status = _store(request).embeddings_status()
         return {
             "ok": True,
-            "version": "0.2.1",
+            "version": "0.2.2",
             "server_name": settings.server_name,
             "host": settings.host,
             "port": settings.port,
@@ -275,13 +279,19 @@ def build_router() -> APIRouter:
         namespace: str = "work",
     ) -> dict[str, Any]:
         try:
-            items = _store(request).search_memory(
+            items, resolved = _store(request).search_memory(
                 q, project=project, type=type, limit=limit,
-                mode=mode, alpha=alpha, namespace=namespace,
+                mode=mode, alpha=alpha, namespace=namespace, _return_mode=True,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
-        return {"query": q, "mode": mode, "count": len(items), "results": items}
+        return {
+            "query": q,
+            "mode": mode,
+            "resolved_mode": resolved,
+            "count": len(items),
+            "results": items,
+        }
 
     # ---- projects / decisions / tasks ----
 
@@ -381,14 +391,26 @@ def build_router() -> APIRouter:
 
     # ---- import ----
 
+    def _check_import_size(request: Request) -> None:
+        """Reject imports whose declared Content-Length is over the cap."""
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > MAX_IMPORT_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"import payload exceeds {MAX_IMPORT_BYTES // (1024*1024)} MB limit",
+            )
+
     @r.post("/import/json")
     async def import_json_route(
         request: Request,
         file: UploadFile | None = File(None),
     ) -> dict[str, Any]:
+        _check_import_size(request)
         store = _store(request)
         if file is not None:
             raw = await file.read()
+            if len(raw) > MAX_IMPORT_BYTES:
+                raise HTTPException(status_code=413, detail="uploaded file too large")
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except Exception as e:
@@ -408,11 +430,18 @@ def build_router() -> APIRouter:
         request: Request,
         file: UploadFile | None = File(None),
     ) -> dict[str, Any]:
+        _check_import_size(request)
         store = _store(request)
         if file is not None:
-            text = (await file.read()).decode("utf-8")
+            raw = await file.read()
+            if len(raw) > MAX_IMPORT_BYTES:
+                raise HTTPException(status_code=413, detail="uploaded file too large")
+            text = raw.decode("utf-8")
         else:
-            text = (await request.body()).decode("utf-8")
+            raw = await request.body()
+            if len(raw) > MAX_IMPORT_BYTES:
+                raise HTTPException(status_code=413, detail="request body too large")
+            text = raw.decode("utf-8")
         return store.import_markdown(text, actor="ui")
 
     # ---- embeddings ----
