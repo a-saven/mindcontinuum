@@ -5,8 +5,9 @@ Local-first long-term memory for AI conversations.
 MindContinuum runs a small server on your own machine that exposes a safe set
 of **MCP tools** to ChatGPT (and other MCP-compatible clients), stores notes,
 decisions, tasks, and project context in a local **SQLite** database with
-**FTS5** full-text search, and ships with a tiny local dashboard for review,
-edit, and archive.
+**FTS5** keyword search and **local embeddings** for hybrid semantic ranking,
+and ships with a small local dashboard for review, edit, archive, link, merge,
+import, and project context packs.
 
 Nothing leaves your laptop unless you explicitly export it.
 
@@ -66,24 +67,32 @@ your machine you need an HTTPS tunnel — see
 | JSON + Markdown export | `/api/export/json`, `/api/export/markdown` |
 | Write-log of every action | `/api/events` + Log tab |
 
-## Safe MCP tools
+## Safe MCP tools (13 in v0.2)
 
-Only these tools are exposed to AI clients in v1. **No raw SQL, no delete,
-no schema mutation, no arbitrary filesystem access.**
+**No raw SQL, no destructive delete, no schema mutation, no arbitrary
+filesystem access. Personal-namespace writes blocked by default.**
 
 | Tool | Purpose |
 |---|---|
-| `ping` | Sanity check; returns server name + UTC time. |
-| `save_memory` | Create a memory item. Defaults to `status=inbox`. |
-| `search_memory` | FTS5 search across title / summary / body / tags. |
-| `get_memory` | Fetch one item by id. |
-| `list_recent` | Most recently created items. |
-| `record_decision` | Decision + rationale + tradeoffs, linked memory item. |
-| `record_task` | Task + next action + priority, linked memory item. |
-| `append_memory` | Append timestamped text to an existing body. |
+| `ping` | Sanity check + reports whether personal writes are enabled. |
+| `save_memory` | Create a memory item. Defaults `status=inbox`, `namespace=work`. |
+| `search_memory` | Keyword (FTS5) / semantic (cosine) / hybrid (blend). |
+| `get_memory` | Fetch one item by id, with links + contradictions attached. |
+| `list_recent` | Most recently created items in a namespace. |
+| `record_decision` | Decision + rationale + tradeoffs as a linked memory item. |
+| `record_task` | Task + next action + priority as a linked memory item. |
+| `append_memory` | Append timestamped text. Allowed even on `stable` items. |
+| `propose_stable` | Recommend an item for promotion. Status → `proposed_stable`. |
+| `mark_contradiction` | Link a new item as `contradicts` an existing one (no status change). |
+| `link_memories` | Link two items as `related` / `supersedes` / `derived_from`. |
+| `suggest_duplicates` | Heuristic candidates (title overlap, tag overlap, project). |
+| `get_project_context_pack` | Compact JSON + Markdown summary of a project. |
 
-Inputs are validated against allowed enums (type, status, importance,
-priority). Every write goes through `events_log`, viewable in the **Log** tab.
+**Promotion to `stable` is UI/REST-only.** Agents can propose; only the user
+can promote. Agents cannot delete, merge duplicates, or supersede. Stable
+memory body/title cannot be modified from MCP — only appended to.
+
+Every write goes through `events_log`, viewable in the **Log** tab.
 
 ## Memory data model (v1)
 
@@ -156,19 +165,38 @@ This repo follows the staged gates from the project spec:
 See [docs/GATES.md](docs/GATES.md) for the full gate map and what gets
 delivered at each step.
 
-## Roadmap (post-spike)
+## v0.2 — what's new since the spike
 
-Already drafted in [docs/ROADMAP.md](docs/ROADMAP.md). Not implemented in v1
-on purpose — the spec is explicit: **do not overbuild before the first loop
-works**.
+All the features below were delivered after Gate 3 was waived. See
+[docs/CHANGELOG.md](docs/CHANGELOG.md).
 
-- Local embeddings + hybrid search
-- Duplicate detection + contradiction markers
-- Project memory packs (`get_project_context_pack`)
-- Markdown import
-- Backup scheduler
+- **Stable promotion workflow** — `propose_stable` (agents) and
+  `promote_stable` / `reject_proposal` (UI/REST only).
+- **Contradictions + supersede** — `mark_contradiction` links never change
+  status; UI offers `supersede_by/{new}` which marks old as `stale`.
+- **Duplicate detection + merge** — `suggest_duplicates` (agents);
+  `merge_into/{target}` archives the source (UI/REST only).
+- **Memory links** — `related`, `supersedes`, `derived_from` from MCP;
+  `contradicts` via `mark_contradiction`; `duplicate_of` via `merge_into`.
+- **Project context packs** — `get_project_context_pack` (MCP, JSON + Markdown);
+  `/api/projects/{slug}/pack` + `pack.md`; UI "Copy pack to clipboard".
+- **JSON + Markdown import** — UI buttons + REST endpoints; MCP cannot
+  bulk-import.
+- **Personal namespace** — `work` (default) and `personal`. Personal items
+  are never returned to MCP clients unless the operator sets
+  `MINDCONTINUUM_ALLOW_PERSONAL_MCP=1` on the server. UI ships a Personal
+  toggle that changes the accent colour as a visual reminder.
+- **Local embeddings + hybrid search** — `fastembed` with BAAI/bge-small-en-v1.5
+  (~133 MB, MIT, ONNX, no Torch). FTS5 stays the default; semantic and
+  hybrid modes opt-in via the search UI or `search_memory(mode=...)`.
+
+## Still roadmap
+
+- Markdown import improvements (CommonMark frontmatter)
+- Backup scheduler / auto-rotation
 - Optional Postgres backend
-- Optional packaged desktop launcher
+- Packaged desktop launcher
+- Memory graph visualisation
 
 ## Project layout
 

@@ -1,5 +1,10 @@
--- MindContinuum SQLite schema v1
+-- MindContinuum SQLite schema v1.1
 -- Conservative + safe-by-default. No destructive AI-facing tooling.
+--
+-- CHECK constraints are kept ONLY where the enum is unlikely to grow
+-- (type, importance, priority, link_type). For statuses we rely on the
+-- Python `_require()` validator in core.py so we can extend statuses
+-- without an ALTER TABLE rebuild dance.
 
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -25,16 +30,17 @@ CREATE TABLE IF NOT EXISTS memory_items (
     tags_json   TEXT NOT NULL DEFAULT '[]',
     importance  TEXT NOT NULL DEFAULT 'medium'
                 CHECK (importance IN ('low','medium','high')),
-    status      TEXT NOT NULL DEFAULT 'inbox'
-                CHECK (status IN ('inbox','processed','stable','pinned','archived','stale','rejected')),
+    status      TEXT NOT NULL DEFAULT 'inbox',
+    namespace   TEXT NOT NULL DEFAULT 'work',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_memory_items_status   ON memory_items(status);
-CREATE INDEX IF NOT EXISTS idx_memory_items_project  ON memory_items(project_id);
-CREATE INDEX IF NOT EXISTS idx_memory_items_type     ON memory_items(type);
-CREATE INDEX IF NOT EXISTS idx_memory_items_created  ON memory_items(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_items_status     ON memory_items(status);
+CREATE INDEX IF NOT EXISTS idx_memory_items_project    ON memory_items(project_id);
+CREATE INDEX IF NOT EXISTS idx_memory_items_type       ON memory_items(type);
+CREATE INDEX IF NOT EXISTS idx_memory_items_created    ON memory_items(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_memory_items_namespace  ON memory_items(namespace);
 
 -- FTS5 virtual table mirrors title/summary/body/tags.
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
@@ -68,8 +74,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     decision    TEXT NOT NULL,
     rationale   TEXT,
     tradeoffs   TEXT,
-    status      TEXT NOT NULL DEFAULT 'proposed'
-                CHECK (status IN ('proposed','accepted','superseded','rejected')),
+    status      TEXT NOT NULL DEFAULT 'proposed',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_project ON decisions(project_id);
@@ -82,8 +87,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     next_action TEXT,
     priority    TEXT NOT NULL DEFAULT 'medium'
                 CHECK (priority IN ('low','medium','high','urgent')),
-    status      TEXT NOT NULL DEFAULT 'open'
-                CHECK (status IN ('open','in_progress','blocked','done','cancelled')),
+    status      TEXT NOT NULL DEFAULT 'open',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
@@ -103,9 +107,12 @@ CREATE TABLE IF NOT EXISTS memory_links (
     to_id       INTEGER NOT NULL REFERENCES memory_items(id) ON DELETE CASCADE,
     link_type   TEXT NOT NULL DEFAULT 'related'
                 CHECK (link_type IN ('related','contradicts','supersedes','derived_from','duplicate_of')),
+    note        TEXT,
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE (from_id, to_id, link_type)
 );
+CREATE INDEX IF NOT EXISTS idx_memory_links_from ON memory_links(from_id);
+CREATE INDEX IF NOT EXISTS idx_memory_links_to   ON memory_links(to_id);
 
 CREATE TABLE IF NOT EXISTS events_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +121,17 @@ CREATE TABLE IF NOT EXISTS events_log (
     target_kind TEXT,
     target_id   INTEGER,
     payload     TEXT,
+    namespace   TEXT NOT NULL DEFAULT 'work',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_events_created ON events_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_namespace ON events_log(namespace);
+
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    memory_id  INTEGER PRIMARY KEY REFERENCES memory_items(id) ON DELETE CASCADE,
+    model      TEXT NOT NULL,
+    dim        INTEGER NOT NULL,
+    vector     BLOB NOT NULL,
+    indexed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(model);

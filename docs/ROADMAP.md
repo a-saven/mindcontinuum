@@ -4,7 +4,7 @@ Anything not in v1 lives here. Order matters — the project spec is explicit:
 **do not start anything below until the bridge loop (Critical Spike 001) is
 proven on Windows.**
 
-## v1 (this repo)
+## v0.1 — Gate 1 spike (shipped)
 
 - Safe core operations behind narrow MCP tools.
 - SQLite + FTS5.
@@ -13,6 +13,20 @@ proven on Windows.**
 - Windows + macOS/Linux launchers.
 - `pytest` harness (40 tests).
 - Owner-facing Gate 2 / Gate 3 playbooks.
+
+## v0.2 — Gate 4 (shipped, Gate 3 waived by owner)
+
+- Stable promotion workflow (propose / promote / reject).
+- Contradictions, supersede, duplicate detection, merge.
+- Memory links (`related` / `supersedes` / `derived_from`).
+- Project context packs (MCP + REST + Markdown).
+- JSON + Markdown import (REST + UI).
+- Personal namespace boundary with MCP gating.
+- Local embeddings via `fastembed` (BAAI/bge-small-en-v1.5) +
+  hybrid search.
+- Dashboard now has Proposed and Projects tabs, namespace toggle,
+  Reindex button, Import buttons.
+- 98 pytest cases.
 
 ## v1.1 — small wins after Gate 3
 

@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import embeddings as _emb
 from .api import build_router
 from .config import Settings
 from .core import MemoryStore
@@ -21,6 +22,9 @@ from .mcp_tools import build_server
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
+    # Pin fastembed's model cache to our app data dir so models don't bloat
+    # the user profile cache and stay portable with the SQLite store.
+    _emb.set_cache_dir(settings.data_dir / "models")
     store = MemoryStore(db_path=settings.db_path)
     mcp_server = build_server(store, name=settings.server_name)
     mcp_asgi = mcp_server.streamable_http_app()
