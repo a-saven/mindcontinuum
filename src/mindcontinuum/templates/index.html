@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MindContinuum</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot" id="status-dot" title="server"></span>
+    <strong>MindContinuum</strong>
+    <span class="muted" id="server-version"></span>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="inbox">Inbox</button>
+    <button class="tab" data-tab="search">Search</button>
+    <button class="tab" data-tab="decisions">Decisions</button>
+    <button class="tab" data-tab="tasks">Tasks</button>
+    <button class="tab" data-tab="events">Log</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </nav>
+  <div class="endpoint">
+    <code id="mcp-url" title="MCP endpoint">…</code>
+    <button id="copy-endpoint" title="Copy MCP endpoint">Copy</button>
+    <button id="new-memory" class="primary">+ New</button>
+  </div>
+</header>
+
+<main>
+  <section id="view-inbox" class="view active">
+    <div class="toolbar">
+      <h2>Recent memory</h2>
+      <div>
+        <select id="filter-status">
+          <option value="">All statuses</option>
+        </select>
+        <button id="refresh-inbox">Refresh</button>
+      </div>
+    </div>
+    <ul class="cards" id="inbox-list"></ul>
+  </section>
+
+  <section id="view-search" class="view">
+    <div class="toolbar">
+      <h2>Search</h2>
+    </div>
+    <div class="search-row">
+      <input id="search-input" type="search" placeholder="Search title, summary, body, tags…" autocomplete="off">
+      <select id="search-type">
+        <option value="">Any type</option>
+      </select>
+      <input id="search-project" type="text" placeholder="project slug (optional)">
+      <button id="search-btn" class="primary">Search</button>
+    </div>
+    <ul class="cards" id="search-results"></ul>
+  </section>
+
+  <section id="view-decisions" class="view">
+    <div class="toolbar">
+      <h2>Decisions</h2>
+      <button id="refresh-decisions">Refresh</button>
+    </div>
+    <ul class="cards" id="decisions-list"></ul>
+  </section>
+
+  <section id="view-tasks" class="view">
+    <div class="toolbar">
+      <h2>Tasks</h2>
+      <button id="refresh-tasks">Refresh</button>
+    </div>
+    <ul class="cards" id="tasks-list"></ul>
+  </section>
+
+  <section id="view-events" class="view">
+    <div class="toolbar">
+      <h2>Write log</h2>
+      <button id="refresh-events">Refresh</button>
+    </div>
+    <ul class="events" id="events-list"></ul>
+  </section>
+
+  <section id="view-settings" class="view">
+    <div class="toolbar"><h2>Settings &amp; connection</h2></div>
+    <div class="settings">
+      <div class="field"><label>Server name</label><div id="set-name" class="value"></div></div>
+      <div class="field"><label>Host</label><div id="set-host" class="value"></div></div>
+      <div class="field"><label>Port</label><div id="set-port" class="value"></div></div>
+      <div class="field"><label>Data folder</label><div id="set-data" class="value"></div></div>
+      <div class="field"><label>SQLite file</label><div id="set-db" class="value"></div></div>
+      <div class="field"><label>Local MCP URL</label><div id="set-mcp-local" class="value"></div></div>
+      <div class="field"><label>Origin MCP URL</label><div id="set-mcp-origin" class="value"></div></div>
+      <hr>
+      <div class="field">
+        <label>Export</label>
+        <div>
+          <a class="btn" href="/api/export/json">Download JSON</a>
+          <a class="btn" href="/api/export/markdown">Download Markdown</a>
+        </div>
+      </div>
+      <hr>
+      <p class="muted">
+        Storage default is <code>~/.mindcontinuum/mindcontinuum.sqlite</code> on macOS/Linux and
+        <code>%LOCALAPPDATA%\\MindContinuum\\mindcontinuum.sqlite</code> on Windows. Override with
+        the <code>MINDCONTINUUM_DATA_DIR</code> environment variable.
+      </p>
+    </div>
+  </section>
+</main>
+
+<div id="detail-overlay" class="overlay hidden">
+  <div class="detail">
+    <div class="detail-header">
+      <input id="d-title" placeholder="title">
+      <div>
+        <button id="d-archive" class="warn">Archive</button>
+        <button id="d-save" class="primary">Save</button>
+        <button id="d-close">×</button>
+      </div>
+    </div>
+    <div class="detail-meta">
+      <label>Type
+        <select id="d-type"></select>
+      </label>
+      <label>Status
+        <select id="d-status"></select>
+      </label>
+      <label>Importance
+        <select id="d-importance"></select>
+      </label>
+      <label>Project
+        <input id="d-project" type="text" placeholder="project (creates if new)">
+      </label>
+      <label>Tags
+        <input id="d-tags" type="text" placeholder="comma,separated,tags">
+      </label>
+    </div>
+    <textarea id="d-summary" placeholder="One-line summary (optional)" rows="2"></textarea>
+    <textarea id="d-body" placeholder="Body" rows="14"></textarea>
+    <div class="detail-footer">
+      <div class="muted" id="d-created"></div>
+      <div>
+        <input id="d-append" type="text" placeholder="Append text…">
+        <button id="d-append-btn">Append</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
